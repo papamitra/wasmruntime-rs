@@ -2,7 +2,7 @@
 use nom::{
     IResult,
     bytes::complete::{tag, is_not},
-    character::complete::{multispace0, multispace1, alphanumeric1, digit1, char, one_of},
+    character::complete::{multispace0, multispace1, alphanumeric1, digit1, char, one_of, anychar, none_of},
     sequence::{delimited, pair, tuple, preceded, terminated},
     multi::{many0, many1, fold_many1},
     branch::alt,
@@ -530,6 +530,108 @@ fn expr(input: &str) -> IResult<&str, Vec<Instr>> {
     instrs(input)
 }
 
+struct Export {
+    name: String,
+    desc: ExportDesc
+}
+
+enum ExportDesc {
+    Func(Index),
+    Table(Index),
+    Mem(Index),
+    Global(Index),
+}
+
+fn export(input: &str) -> IResult<&str, Export> {
+    let (input, (_, _, name, desc, _)) =
+        tuple((ws_(tag("(")), ws_(tag("export")), string, exportdesc, ws_(tag(")"))))(input)?;
+
+    Ok((input, Export{name, desc}))
+}
+
+fn string(input: &str) -> IResult<&str, String> {
+
+    let (input, _) = ws(input)?;
+
+    // TODO: support escape sequence
+    map(delimited(tag("\""), many0(none_of("\"")), tag("\"")), |s| s.iter().collect::<String>())(input)
+}
+
+fn exportdesc(input: &str) -> IResult<&str, ExportDesc> {
+    let (input, _) = ws_(tag("("))(input)?;
+
+    let (input, desc) = alt((map(preceded(ws_(tag("func")), index), ExportDesc::Func),
+                             map(preceded(ws_(tag("table")), index), ExportDesc::Table),
+                             map(preceded(ws_(tag("memory")), index), ExportDesc::Mem),
+                             map(preceded(ws_(tag("global")), index), ExportDesc::Global)
+                             ))(input)?;
+
+    let (input, _) = ws_(tag(")"))(input)?;
+
+    Ok((input, desc))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Elem {
+    table: Index,
+    offset: Vec<Instr>,
+    init: Vec<Index>,
+}
+
+fn elem(input: &str) -> IResult<&str, Elem> {
+    let (input, (_,_, offset, _, init, _)) =
+        tuple((ws_(tag("(")), ws_(tag("elem")),
+               elem_offset, opt(ws_(tag("func"))), many0(index),
+               ws_(tag(")"))))(input)?;
+
+    Ok(("", Elem{table: Index::Val(0), offset, init}))
+}
+
+fn elem_offset(input: &str) -> IResult<&str, Vec<Instr>> {
+    alt((delimited(pair(ws_(tag("(")), ws_(tag("offset"))),
+                   expr, ws_(tag(")"))),
+         folded_instr,
+         map(instr, |i| vec![i])))(input)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Import {
+    module: String,
+    name: String,
+    desc: ImportDesc,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImportDesc {
+    Func(Option<Index>, Index),
+    Table(Index),
+    Mem(Index),
+    Global(Index),
+}
+
+fn import(input: &str) -> IResult<&str, Import> {
+    let (input, (_, _, module, name, desc, _)) =
+        tuple((ws_(tag("(")), ws_(tag("import")), string, string, importdesc, ws_(tag(")"))))(input)?;
+
+    Ok((input, Import{module, name, desc}))
+}
+
+fn importdesc(input: &str) -> IResult<&str, ImportDesc> {
+    let (input, _) = ws_(tag("("))(input)?;
+
+    // TODO: support table, memory, global IDs
+    let (input, desc) = alt((map(preceded(ws_(tag("func")), pair(opt(index), typeuse)),
+                                 |(id, typeidx)| ImportDesc::Func(id, typeidx)),
+                             map(preceded(ws_(tag("table")), index), ImportDesc::Table),
+                             map(preceded(ws_(tag("memory")), index), ImportDesc::Mem),
+                             map(preceded(ws_(tag("global")), index), ImportDesc::Global)
+                             ))(input)?;
+
+    let (input, _) = ws_(tag(")"))(input)?;
+
+    Ok((input, desc))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +787,35 @@ mod tests {
             Ok(("", Global{ gt: GlobalType::Var(ValType::I32),
                             init: vec![Instr::ConstInstr(ConstInstr::I32("1048576".to_string()))] })),
         );
+    }
+
+    #[test]
+    fn should_consume_elem() {
+        assert_eq!(
+            elem("(elem (i32.const 123) func $x $y)"),
+            Ok(("", Elem{table: Index::Val(0),
+                         offset: vec![Instr::ConstInstr(ConstInstr::I32("123".to_string()))],
+                         init: vec![Index::Id("$x".to_string()), Index::Id("$y".to_string())],})),
+        );
+    }
+
+    #[test]
+    fn should_consume_string() {
+        assert_eq!(
+            string("\"test\""),
+            Ok(("", "test".to_string()))
+        );
+    }
+
+    #[test]
+    fn should_comsume_import() {
+        assert_eq!(
+            import("(import \"wasi_snapshot_preview1\" \"proc_exit\" (func $__wasi_proc_exit (type 1)))"),
+            Ok(("", Import{module: "wasi_snapshot_preview1".to_string(),
+                           name: "proc_exit".to_string(),
+                           desc: ImportDesc::Func(Some(Index::Id("$__wasi_proc_exit".to_string())), Index::Val(1))
+            }))
+        );
+
     }
 }

@@ -10,7 +10,24 @@ use nom::{
     error::ParseError,
 };
 
-struct Module;
+#[derive(Debug, PartialEq, Eq, Default)]
+struct Module {
+    ty: Vec<Type>,
+    im: Vec<Import>,
+    func: Vec<Func>,
+    ta: Vec<Table>,
+    me: Vec<Mem>,
+    gl: Vec<Global>,
+    ex: Vec<Export>,
+    // st: Start,
+    el: Option<Elem>,
+}
+
+impl Module {
+    fn new() -> Self {
+        Module::default()
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Param {
@@ -18,6 +35,7 @@ struct Param {
     id: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Type {
     id: Option<String>,
     functype: FuncType,
@@ -143,10 +161,10 @@ fn id(input: &str) -> IResult<&str, &str> {
 }
 
 fn module(input: &str) -> IResult<&str, Module> {
-    let (input, _) = tuple((ws, tag("("), ws, tag("module"), ws))(input)?;
+    let (input, _) = tuple((ws_(tag("(")), ws_(tag("module")), ws))(input)?;
 
 
-    Ok((input, Module))
+    Ok((input, Module::new()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -530,11 +548,13 @@ fn expr(input: &str) -> IResult<&str, Vec<Instr>> {
     instrs(input)
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Export {
     name: String,
     desc: ExportDesc
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum ExportDesc {
     Func(Index),
     Table(Index),
@@ -553,8 +573,31 @@ fn string(input: &str) -> IResult<&str, String> {
 
     let (input, _) = ws(input)?;
 
-    // TODO: support escape sequence
-    map(delimited(tag("\""), many0(none_of("\"")), tag("\"")), |s| s.iter().collect::<String>())(input)
+    map(delimited(tag("\""),
+                  many0(alt((escapeseq, none_of("\"\\")))),
+                  tag("\"")), |s| s.into_iter().collect::<String>())(input)
+}
+
+fn escapeseq(input: &str) -> IResult<&str, char> {
+    let hexdigit = |s| one_of("0123456789abcdefABCDEF")(s);
+
+    alt((value('\t', tag("\\t")),
+         value('\n', tag("\\n")),
+         value('\r', tag("\\r")),
+         value('"', tag("\\\"")),
+         value('\'', tag("\\'")),
+         value('\\', tag("\\\\")),
+         map(delimited(tag("\\u{"),
+                       recognize(
+                           many1(
+                               terminated(hexdigit.clone(), many0(char('_')))
+                           )),
+                       tag("}")),
+             |out: &str| std::char::from_u32(u32::from_str_radix(&str::replace(&out, "_", ""), 16).unwrap()).unwrap(),
+         ),
+         map(preceded(tag("\\"), recognize(pair(hexdigit.clone(), hexdigit.clone()))),
+             |out: &str| unsafe {std::char::from_u32_unchecked(u32::from_str_radix(&out, 16).unwrap())} )
+    ))(input)
 }
 
 fn exportdesc(input: &str) -> IResult<&str, ExportDesc> {
@@ -581,13 +624,13 @@ struct Elem {
 fn elem(input: &str) -> IResult<&str, Elem> {
     let (input, (_,_, offset, _, init, _)) =
         tuple((ws_(tag("(")), ws_(tag("elem")),
-               elem_offset, opt(ws_(tag("func"))), many0(index),
+               offset_expr, opt(ws_(tag("func"))), many0(index),
                ws_(tag(")"))))(input)?;
 
     Ok(("", Elem{table: Index::Val(0), offset, init}))
 }
 
-fn elem_offset(input: &str) -> IResult<&str, Vec<Instr>> {
+fn offset_expr(input: &str) -> IResult<&str, Vec<Instr>> {
     alt((delimited(pair(ws_(tag("(")), ws_(tag("offset"))),
                    expr, ws_(tag(")"))),
          folded_instr,
@@ -630,6 +673,25 @@ fn importdesc(input: &str) -> IResult<&str, ImportDesc> {
     let (input, _) = ws_(tag(")"))(input)?;
 
     Ok((input, desc))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Data {
+    idx: Option<Index>,
+    offset: Vec<Instr>,
+    init: String,
+}
+
+fn data(input: &str) -> IResult<&str, Data> {
+    let (input, (_, idx, offset, init, _)) = tuple((pair(ws_(tag("(")), ws_(tag("data"))),
+                             opt(index),
+                             offset_expr,
+                             string,
+                             ws_(tag(")"))))(input)?;
+
+    let init = init.to_string();
+
+    Ok((input, Data{idx, offset, init}))
 }
 
 #[cfg(test)]
@@ -800,11 +862,30 @@ mod tests {
     }
 
     #[test]
+    fn should_consume_escapeseq() {
+        assert_eq!(
+            escapeseq(r"\n"),
+            Ok(("", '\n'))
+        );
+
+        assert_eq!(
+            escapeseq(r"\n"),
+            Ok(("", '\n'))
+        );
+    }
+
+    #[test]
     fn should_consume_string() {
         assert_eq!(
             string("\"test\""),
             Ok(("", "test".to_string()))
         );
+
+        assert_eq!(
+            string(r#""\n""#),
+            Ok(("", "\n".to_string()))
+        );
+
     }
 
     #[test]
@@ -817,5 +898,14 @@ mod tests {
             }))
         );
 
+    }
+
+    #[test]
+    fn should_consume_data() {
+        assert_eq!(
+            data(r#"(data (;1;) (i32.const 1058288) "\01\00\00\00\00\00\00\00\01\00\00\00\18\0f\10\00")"#),
+            Ok(("", Data{idx: None, offset: vec![Instr::ConstInstr(ConstInstr::I32("1058288".to_string()))],
+                         init: "\u{1}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{1}\u{0}\u{0}\u{0}\u{18}\u{f}\u{10}\u{0}".to_string()}))
+        );
     }
 }

@@ -10,9 +10,12 @@ use nom::{
     error::ParseError,
 };
 
+use std::rc::Rc;
+use std::cell::RefCell;
+
 #[derive(Debug, PartialEq, Eq, Default)]
 struct Module {
-    ty: Vec<Type>,
+    ty: Vec<FuncType>,
     im: Vec<Import>,
     func: Vec<Func>,
     ta: Vec<Table>,
@@ -20,7 +23,8 @@ struct Module {
     gl: Vec<Global>,
     ex: Vec<Export>,
     // st: Start,
-    el: Option<Elem>,
+    el: Vec<Elem>,
+    da: Vec<Data>,
 }
 
 impl Module {
@@ -163,8 +167,22 @@ fn id(input: &str) -> IResult<&str, &str> {
 fn module(input: &str) -> IResult<&str, Module> {
     let (input, _) = tuple((ws_(tag("(")), ws_(tag("module")), ws))(input)?;
 
+    let module = Rc::new(RefCell::new(Module::new()));
 
-    Ok((input, Module::new()))
+    let (input, _) = many0(alt((map(functype, |ft| { module.borrow_mut().ty.push(ft); ()}),
+                                map(import, |im| { module.borrow_mut().im.push(im); ()}),
+                                map(func, |func| { module.borrow_mut().func.push(func); ()}),
+                                map(table, |ta| { module.borrow_mut().ta.push(ta); ()}),
+                                map(mem, |me| { module.borrow_mut().me.push(me); ()}),
+                                map(global, |gl| { module.borrow_mut().gl.push(gl); ()}),
+                                map(export, |ex| { module.borrow_mut().ex.push(ex); ()}),
+                                map(elem, |el| { module.borrow_mut().el.push(el); ()}),
+                                map(data, |da| { module.borrow_mut().da.push(da); ()}),
+    )))(input)?;
+
+    let (input, _) = ws_(tag(")"))(input)?;
+
+    Ok((input, Rc::try_unwrap(module).ok().unwrap().into_inner()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -906,6 +924,14 @@ mod tests {
             data(r#"(data (;1;) (i32.const 1058288) "\01\00\00\00\00\00\00\00\01\00\00\00\18\0f\10\00")"#),
             Ok(("", Data{idx: None, offset: vec![Instr::ConstInstr(ConstInstr::I32("1058288".to_string()))],
                          init: "\u{1}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{1}\u{0}\u{0}\u{0}\u{18}\u{f}\u{10}\u{0}".to_string()}))
+        );
+    }
+
+    #[test]
+    fn should_consume_module() {
+        assert_eq!(
+            module("(module)"),
+            Ok(("", Module::new())),
         );
     }
 }

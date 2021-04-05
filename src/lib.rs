@@ -1,5 +1,6 @@
 mod structure;
 mod watparser;
+mod executor;
 
 #[cfg(test)]
 mod tests {

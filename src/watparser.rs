@@ -109,7 +109,7 @@ fn functype(input: &str) -> IResult<&str, FuncType> {
 
 // TODO: parse identified params
 fn param(input: &str) -> IResult<&str, Vec<ValType>> {
-    let (input, _) = tuple((ws, tag("("), ws, tag("param"), ws))(input)?;
+    let (input, _) = pair(ws_(tag("(")), ws_(tag("param")))(input)?;
 
     let (input, valtypes) = fold_many1(tuple((ws, valtype)),
                Vec::new(),
@@ -118,14 +118,14 @@ fn param(input: &str) -> IResult<&str, Vec<ValType>> {
                    acc
                })(input)?;
 
-    let (input, _) = tuple((ws, tag(")")))(input)?;
+    let (input, _) = ws_(tag(")"))(input)?;
 
     Ok((input, valtypes))
 }
 
 // TODO: parse identified result
 fn result(input: &str) -> IResult<&str, Vec<ValType>> {
-    let (input, _) = tuple((ws, tag("("), ws, tag("result"), ws))(input)?;
+    let (input, _) = pair(ws_(tag("(")), ws_(tag("result")))(input)?;
 
     let (input, valtypes) = fold_many1(tuple((ws, valtype)),
                Vec::new(),
@@ -134,7 +134,7 @@ fn result(input: &str) -> IResult<&str, Vec<ValType>> {
                    acc
                })(input)?;
 
-    let (input, _) = tuple((ws, tag(")")))(input)?;
+    let (input, _) = ws_(tag(")"))(input)?;
 
     Ok((input, valtypes))
 }
@@ -186,41 +186,53 @@ fn module(input: &str) -> IResult<&str, Module> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Func {
+pub(crate) struct Func {
     id: Option<String>,
-    typeidx: Index,
+    typeuse: TypeUse,
     locals: Vec<ValType>,
     body: Vec<Instr>,
 }
 
-fn func(input: &str) -> IResult<&str, Func> {
+pub(crate) fn func(input: &str) -> IResult<&str, Func> {
     let (input, _) = ws(input)?;
 
-    let (input, (_, id, typeidx, locals, body, _)) =  tuple((
-        tuple((tag("("), ws, tag("func"))),
-        preceded(ws, opt(id)),
-        preceded(ws, typeuse),
-        preceded(ws, local),
+    let (input, (_, id, typeuse, locals, body, _)) =  tuple((
+        pair(tag("("), ws_(tag("func"))),
+        opt(ws_(id)),
+        ws_(typeuse),
+        opt(ws_(local)),
         instrs,
-        tuple((ws, tag(")")))))(input)?;
+        ws_(tag(")")),
+    ))(input)?;
 
     let id = id.map(|s| s.to_string());
 
-    Ok((input, Func{id, typeidx, locals, body}))
+    Ok((input, Func{id, typeuse,
+                    locals: locals.unwrap_or(Vec::new()),
+                    body}))
 }
 
-fn typeuse(input: &str) -> IResult<&str, Index> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TypeUse {
+    index: Option<Index>,
+    params: Vec<ValType>,
+    results: Vec<ValType>
+}
+
+fn typeuse(input: &str) -> IResult<&str, TypeUse> {
     let (input, _) = ws(input)?;
 
-    let (input, (_, idx, _)) = tuple((tuple((tag("("), ws, tag("type"))),
-                                      index,
-                                      pair(ws, tag(")"))))(input)?;
+    let (input, index) = opt(delimited(pair(tag("("), ws_(tag("type"))),
+                                     index,
+                                     ws_(tag(")"))))(input)?;
 
     // TODO: verify param, result
-    let (input, _) = opt(param)(input)?;
-    let (input, _) = opt(result)(input)?;
+    let (input, params) = opt(param)(input)?;
+    let params = params.unwrap_or(Vec::new());
+    let (input, results) = opt(result)(input)?;
+    let results = results.unwrap_or(Vec::new());
 
-    Ok((input, idx))
+    Ok((input, TypeUse{index, params, results}))
 }
 
 fn local(input: &str) -> IResult<&str, Vec<ValType>> {
@@ -664,7 +676,7 @@ struct Import {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImportDesc {
-    Func(Option<Index>, Index),
+    Func(Option<Index>, TypeUse),
     Table(Index),
     Mem(Index),
     Global(Index),
@@ -682,7 +694,7 @@ fn importdesc(input: &str) -> IResult<&str, ImportDesc> {
 
     // TODO: support table, memory, global IDs
     let (input, desc) = alt((map(preceded(ws_(tag("func")), pair(opt(index), typeuse)),
-                                 |(id, typeidx)| ImportDesc::Func(id, typeidx)),
+                                 |(id, typeuse)| ImportDesc::Func(id, typeuse)),
                              map(preceded(ws_(tag("table")), index), ImportDesc::Table),
                              map(preceded(ws_(tag("memory")), index), ImportDesc::Mem),
                              map(preceded(ws_(tag("global")), index), ImportDesc::Global)
@@ -801,7 +813,7 @@ mod tests {
     fn should_consume_typeuse() {
         assert_eq!(
             typeuse("(type 0)"),
-            Ok(("", Index::Val(0)))
+            Ok(("", TypeUse{index: Some(Index::Val(0)), params: vec![], results: vec![]}))
         );
     }
 
@@ -822,9 +834,17 @@ mod tests {
         assert_eq!(
             func("(func $_start (type 0) (local i32))"),
             Ok(("", Func{id: Some("$_start".to_owned()),
-                         typeidx: Index::Val(0),
+                         typeuse: TypeUse{index: Some(Index::Val(0)), params: vec![], results: vec![]},
                          locals: vec![ValType::I32],
                          body: vec![]}))
+        );
+
+        assert_eq!(
+            func("(func $_start (result i32) i32.const 42)"),
+            Ok(("", Func{id: Some("$_start".to_owned()),
+                         typeuse: TypeUse{index: None, params: vec![], results: vec![ValType::I32]},
+                         locals: vec![],
+                         body: vec![Instr::ConstInstr(ConstInstr::I32("42".to_string()))]})),
         );
     }
 
@@ -912,7 +932,8 @@ mod tests {
             import("(import \"wasi_snapshot_preview1\" \"proc_exit\" (func $__wasi_proc_exit (type 1)))"),
             Ok(("", Import{module: "wasi_snapshot_preview1".to_string(),
                            name: "proc_exit".to_string(),
-                           desc: ImportDesc::Func(Some(Index::Id("$__wasi_proc_exit".to_string())), Index::Val(1))
+                           desc: ImportDesc::Func(Some(Index::Id("$__wasi_proc_exit".to_string())),
+                                                  TypeUse{index: Some(Index::Val(1)), params: vec![], results: vec![]})
             }))
         );
 

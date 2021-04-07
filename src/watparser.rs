@@ -46,7 +46,7 @@ struct Type {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum ValType {
+pub enum ValType {
     I32,
     I64,
     F32,
@@ -190,7 +190,7 @@ pub(crate) struct Func {
     id: Option<String>,
     typeuse: TypeUse,
     locals: Vec<ValType>,
-    body: Vec<Instr>,
+    pub body: Vec<Instr>,
 }
 
 pub(crate) fn func(input: &str) -> IResult<&str, Func> {
@@ -246,7 +246,7 @@ fn local(input: &str) -> IResult<&str, Vec<ValType>> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Index {
+pub enum Index {
     Val(u32),
     Id(String),
 }
@@ -259,7 +259,7 @@ fn index(input: &str) -> IResult<&str, Index> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Instr {
+pub enum Instr {
     Unreachable,
     Nop,
     Br(u32),
@@ -320,7 +320,7 @@ fn folded_instr(input: &str) -> IResult<&str, Vec<Instr>> {
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum VarInstr {
+pub enum VarInstr {
     LocalGet(Index),
     LocalSet(Index),
     LocalTee(Index),
@@ -329,7 +329,7 @@ enum VarInstr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MemOpInstr {
+pub struct MemOpInstr {
     ty: ValType,
     op: String,
     len: Option<u32>,
@@ -344,7 +344,7 @@ struct MemOpArg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Block {
+pub struct Block {
     body: Vec<Instr>
 }
 
@@ -406,9 +406,9 @@ fn memopinstr(input: &str) -> IResult<&str, MemOpInstr> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NumInstr {
-    ty: ValType,
-    op: String,
+pub struct NumInstr {
+    pub ty: ValType,
+    pub op: String,
 }
 
 fn numinstr(input: &str) -> IResult<&str, NumInstr> {
@@ -421,7 +421,7 @@ fn numinstr(input: &str) -> IResult<&str, NumInstr> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ConstInstr {
+pub enum ConstInstr {
     I32(String),
     I64(String),
     F32(String),

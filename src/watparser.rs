@@ -14,10 +14,10 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 #[derive(Debug, PartialEq, Eq, Default)]
-struct Module {
+pub struct Module {
     ty: Vec<FuncType>,
     im: Vec<Import>,
-    func: Vec<Func>,
+    pub func: Vec<Func>,
     ta: Vec<Table>,
     me: Vec<Mem>,
     gl: Vec<Global>,
@@ -186,8 +186,8 @@ fn module(input: &str) -> IResult<&str, Module> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Func {
-    id: Option<String>,
+pub struct Func {
+    pub id: Option<String>,
     typeuse: TypeUse,
     locals: Vec<ValType>,
     pub body: Vec<Instr>,

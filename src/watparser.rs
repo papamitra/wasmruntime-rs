@@ -66,6 +66,7 @@ impl ValType {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct FuncType {
+    index: Option<Index>,
     param_types: Vec<ValType>,
     result_types: Vec<ValType>,
 }
@@ -94,6 +95,9 @@ fn ws_<'a, F: 'a, O>(inner: F) -> impl FnMut(&'a str) -> IResult<&'a str, O>
 }
 
 fn functype(input: &str) -> IResult<&str, FuncType> {
+    let (input, _) = tuple((ws_(tag("(")), ws_(tag("type"))))(input)?;
+    let (input, index) = opt(ws_(index))(input)?;
+
     let (input, _) = tuple((ws_(tag("(")), ws_(tag("func"))))(input)?;
 
     let (input, opt_param) = opt(param)(input)?;
@@ -102,9 +106,10 @@ fn functype(input: &str) -> IResult<&str, FuncType> {
     let (input, opt_result) = opt(result)(input)?;
     let result_types = opt_result.unwrap_or(Vec::new());
 
-    let (input, _) = tuple((ws, tag(")")))(input)?;
+    let (input, _) = ws_(tag(")"))(input)?;
+    let (input, _) = ws_(tag(")"))(input)?;
 
-    Ok((input, FuncType{param_types, result_types}))
+    Ok((input, FuncType{index, param_types, result_types}))
 }
 
 // TODO: parse identified params
@@ -164,7 +169,7 @@ fn id(input: &str) -> IResult<&str, &str> {
                                        tag("|"), tag("~"))))))))(input)
 }
 
-fn module(input: &str) -> IResult<&str, Module> {
+pub fn module(input: &str) -> IResult<&str, Module> {
     let (input, _) = tuple((ws_(tag("(")), ws_(tag("module")), ws))(input)?;
 
     let module = Rc::new(RefCell::new(Module::new()));
@@ -188,8 +193,8 @@ fn module(input: &str) -> IResult<&str, Module> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Func {
     pub id: Option<String>,
-    typeuse: TypeUse,
-    locals: Vec<ValType>,
+    pub typeuse: TypeUse,
+    pub locals: Vec<ValType>,
     pub body: Vec<Instr>,
 }
 
@@ -213,10 +218,10 @@ pub(crate) fn func(input: &str) -> IResult<&str, Func> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TypeUse {
+pub struct TypeUse {
     index: Option<Index>,
-    params: Vec<ValType>,
-    results: Vec<ValType>
+    pub params: Vec<ValType>,
+    pub results: Vec<ValType>
 }
 
 fn typeuse(input: &str) -> IResult<&str, TypeUse> {
@@ -763,8 +768,9 @@ mod tests {
     #[test]
     fn should_consume_functype() {
         assert_eq!(
-            functype("(func (param i32 i64) (result f32 f64))"),
-            Ok(("", FuncType{param_types: vec![ValType::I32, ValType::I64],
+            functype("(type (func (param i32 i64) (result f32 f64)))"),
+            Ok(("", FuncType{index: None,
+                             param_types: vec![ValType::I32, ValType::I64],
                              result_types: vec![ValType::F32, ValType::F64]}))
         );
     }
@@ -954,5 +960,10 @@ mod tests {
             module("(module)"),
             Ok(("", Module::new())),
         );
+
+        {
+            module("(module (type (;0;) (func)))").unwrap();
+            module("(module (type (;0;) (func)) (func $_start (type 0) (result i32) i32.const 42))").unwrap();
+        }
     }
 }

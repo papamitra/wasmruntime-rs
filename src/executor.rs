@@ -115,6 +115,11 @@ impl Value {
 struct Stack<'a>(Vec<Entry<'a>>);
 
 impl<'a> Stack<'a> {
+
+    fn new() -> Self {
+        Stack(Vec::new())
+    }
+
     fn pop(&mut self) -> Option<Entry> {
         self.0.pop()
     }
@@ -275,11 +280,17 @@ fn exec_call<'a>(funcidx: &Index, stack: &mut Stack<'a>, store: &Store<'a>) -> R
     let func = store.funcs.get(idx)
         .ok_or_else(|| ExecError::FuncIdxNotFound{index: idx})?;
 
-    //TODO: pop n val from stack
+    let typeuse = &func.code.typeuse;
+    let arity = typeuse.results.len();
+    let mut locals = stack.pop_n_val(typeuse.params.len())?;
+    for valtype in func.code.locals.iter() {
+        locals.push(valtype_to_defaultval(valtype));
+    }
+
 
     let next_frame = Frame{ module: Rc::clone(&func.module),
-                            locals: Vec::new(), // TODO
-                            arity: 0, // TODO
+                            locals,
+                            arity,
                             };
 
     stack.push_frame(next_frame);
@@ -289,6 +300,15 @@ fn exec_call<'a>(funcidx: &Index, stack: &mut Stack<'a>, store: &Store<'a>) -> R
     stack.push_label(label);
 
     Ok(())
+}
+
+fn valtype_to_defaultval(valtype: &ValType) -> Value {
+    match valtype {
+        ValType::I32 => Value::I32(0),
+        ValType::I64 => Value::I64(0),
+        ValType::F32 => Value::F32(0.0),
+        ValType::F64 => Value::F64(0.0),
+    }
 }
 
 fn allocmodule<'a>(store: &'a mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance<'a>> {
@@ -335,7 +355,7 @@ fn exec<'a>(stack: &mut Stack<'a>, store: &Store<'a>) {
     loop {
         let mut label = stack.current_label();
         if label.is_none() {
-            // maybe end of function
+            // maybe reached end of function
 
             let frame = stack.current_frame();
             let arity = frame.arity;
@@ -400,18 +420,17 @@ fn exec_instr<'a>(instr: &Instr, stack: &mut Stack<'a>, store: &Store<'a>) -> Re
 }
 
 #[cfg(test)]
-mod Test {
+mod tests {
 
     use super::*;
     use crate::watparser::*;
 
-    #[test]
+/*    #[test]
     fn should_exec_func() {
         let mut stack = Stack::new();
         let (_, func) = func("(func $_start (result i32) i32.const 42)").unwrap();
         exec_func(&func, &mut stack);
 
         assert_eq!(stack.pop(), Some(Entry::Value(Value::I32(42))));
-    }
-
+    }*/
 }

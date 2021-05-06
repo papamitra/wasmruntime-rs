@@ -317,7 +317,7 @@ fn valtype_to_defaultval(valtype: &ValType) -> Value {
     }
 }
 
-fn allocmodule<'a>(store: &'a mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance<'a>> {
+fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance<'a>> {
 
     let mut mod_inst = Rc::new(ModuleInstance{ module ,
                                                funcs: Vec::new(),
@@ -486,4 +486,15 @@ mod tests {
         let modinst = allocmodule(&mut store, &module);
     }
 
+    fn should_invoke_function() {
+        let (_, module) = module("(module (type (;0;) (func)) (func $_start (type 0) (result i32) i32.const 42))").unwrap();
+
+        let mut store = Store::new();
+        let modinst = allocmodule(&mut store, &module);
+
+        let res = invoke(&store, 0, Vec::new());
+        assert!(res.is_ok());
+
+        assert_eq!(res.unwrap(), vec![Value::I32(42)]);
+    }
 }

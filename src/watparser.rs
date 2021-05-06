@@ -28,7 +28,7 @@ pub struct Module {
 }
 
 impl Module {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Module::default()
     }
 }

@@ -154,15 +154,15 @@ impl<'a> Stack<'a> {
         }
     }
 
-    fn current_frame(&mut self) -> &mut Frame<'a> {
+    fn current_frame(&mut self) -> Option<&mut Frame<'a>> {
         for entry in self.0.iter_mut().rev() {
             match entry {
-                Entry::Activation(frame) => return frame,
+                Entry::Activation(frame) => return Some(frame),
                 _ => continue
             }
         }
 
-        unimplemented!()
+        None
     }
 
     fn current_label(&mut self) -> Option<&mut Label<'a>> {
@@ -268,7 +268,7 @@ fn exec_add(ty: &ValType, stack: &mut Stack) -> Result<(), ExecError> {
 
 fn exec_call<'a>(funcidx: &Index, stack: &mut Stack<'a>, store: &Store<'a>) -> Result<(), ExecError> {
 
-    let frame = stack.current_frame();
+    let frame = stack.current_frame().unwrap();
     let module = &frame.module;
 
     let idx = match funcidx {
@@ -277,8 +277,14 @@ fn exec_call<'a>(funcidx: &Index, stack: &mut Stack<'a>, store: &Store<'a>) -> R
             .ok_or_else(|| ExecError::FuncUndefined{ name: s.clone()})? as usize
     };
 
-    let func = store.funcs.get(idx)
-        .ok_or_else(|| ExecError::FuncIdxNotFound{index: idx})?;
+    invoke_function(store, idx, stack);
+
+    Ok(())
+}
+
+fn invoke_function<'a>(store: &Store<'a>, funcaddr: FuncAddr, stack: &mut Stack<'a>) -> Result<(), ExecError> {
+    let func = store.funcs.get(funcaddr)
+        .ok_or_else(|| ExecError::FuncIdxNotFound{index: funcaddr})?;
 
     let typeuse = &func.code.typeuse;
     let arity = typeuse.results.len();
@@ -350,14 +356,50 @@ fn create_idcontext(module: &Module) -> IdContext {
     context
 }
 
+fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<Vec<Value>, ExecError> {
+
+    let func = &store.funcs[funcaddr];
+    let typeuse = &func.code.typeuse;
+    if typeuse.params.len() != val.len() {
+        panic!("invode error: param length missmatch");
+    }
+
+    // TODO: verify params type
+
+    let module = Module::new();
+    let mod_inst = Rc::new(ModuleInstance{ module: &module,
+                                           funcs: Vec::new(),
+                                           funcnamemap: HashMap::new()});
+
+    let frame = Frame{ module: mod_inst,
+                       locals: Vec::new(),
+                       arity: typeuse.results.len()};
+
+    let mut stack = Stack::new();
+    for v in val {
+        stack.push(Entry::Value(v));
+    }
+
+    invoke_function(store, funcaddr, &mut stack);
+
+    exec(store, &mut stack);
+
+    Ok(Vec::new())
+}
+
 // dummy code
-fn exec<'a>(stack: &mut Stack<'a>, store: &Store<'a>) {
+fn exec<'a>(store: &Store<'a>, stack: &mut Stack<'a>) {
     loop {
         let mut label = stack.current_label();
         if label.is_none() {
-            // maybe reached end of function
-
             let frame = stack.current_frame();
+            if frame.is_none() {
+                // reached end of execution
+                return;
+            }
+
+            // reached end of function
+            let frame = frame.unwrap();
             let arity = frame.arity;
 
             let vals = stack.pop_n_val(arity).unwrap();
@@ -425,12 +467,23 @@ mod tests {
     use super::*;
     use crate::watparser::*;
 
-/*    #[test]
+    #[test]
     fn should_exec_func() {
         let mut stack = Stack::new();
         let (_, func) = func("(func $_start (result i32) i32.const 42)").unwrap();
         exec_func(&func, &mut stack);
 
-        assert_eq!(stack.pop(), Some(Entry::Value(Value::I32(42))));
-    }*/
+        match stack.pop() {
+            Some(Entry::Value(v)) => assert_eq!(v, Value::I32(42)),
+            v => panic!("actual value: {:?}", v),
+        }
+    }
+
+    fn should_alloc_modlue() {
+        let (_, module) = module("(module (type (;0;) (func)) (func $_start (type 0) (result i32) i32.const 42))").unwrap();
+
+        let mut store = Store::new();
+        let modinst = allocmodule(&mut store, &module);
+    }
+
 }

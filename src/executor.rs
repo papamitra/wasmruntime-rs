@@ -1,4 +1,3 @@
-
 use crate::structure::*;
 use crate::watparser::*;
 
@@ -35,7 +34,7 @@ struct Store<'a> {
 
 impl<'a> Store<'a> {
     fn new() -> Self {
-        Store::new()
+        Store{ funcs: Vec::new() }
     }
 }
 
@@ -174,7 +173,7 @@ impl<'a> Stack<'a> {
             }
         }
 
-        unimplemented!()
+        None
     }
 
     fn pop_n_val(&mut self, n: usize) -> Result<Vec<Value>, ExecError> {
@@ -199,19 +198,6 @@ impl<'a> Stack<'a> {
     fn push_label(&mut self, label: Label<'a>) {
         self.0.push(Entry::Label(label))
     }
-}
-
-
-fn exec_func(func: &Func, stack: &mut Stack) -> Result<(), ExecError> {
-    for instr in func.body.iter() {
-        match instr {
-            Instr::ConstInstr(instr) => exec_constinstr(instr, stack),
-            Instr::NumInstr(instr) => exec_numinstr(instr, stack)?,
-            _ => unimplemented!()
-        }
-    }
-
-    Ok(())
 }
 
 fn exec_constinstr(instr: &ConstInstr, stack: &mut Stack) {
@@ -318,17 +304,19 @@ fn valtype_to_defaultval(valtype: &ValType) -> Value {
 }
 
 fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance<'a>> {
+    log::debug!("alloc module");
 
     let mut mod_inst = Rc::new(ModuleInstance{ module ,
                                                funcs: Vec::new(),
-
                                                funcnamemap: HashMap::new()});
+
+    let mod_ptr: *mut _ = Rc::get_mut(&mut mod_inst).unwrap();
 
     for func in module.func.iter() {
         let funcaddr = allocfunc(store, func, Rc::clone(&mod_inst));
-        Rc::get_mut(&mut mod_inst).unwrap().funcs.push(funcaddr);
+        unsafe { (*mod_ptr).funcs.push(funcaddr);}
         if let Some(name) = &func.id {
-            Rc::get_mut(&mut mod_inst).unwrap().funcnamemap.insert(name.clone(), funcaddr);
+            unsafe { (*mod_ptr).funcnamemap.insert(name.clone(), funcaddr);}
         }
     }
 
@@ -357,6 +345,7 @@ fn create_idcontext(module: &Module) -> IdContext {
 }
 
 fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<Vec<Value>, ExecError> {
+    log::debug!("invoke funcaddr: {}", funcaddr);
 
     let func = &store.funcs[funcaddr];
     let typeuse = &func.code.typeuse;
@@ -384,7 +373,7 @@ fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<
 
     exec(store, &mut stack);
 
-    Ok(Vec::new())
+    stack.pop_n_val(frame.arity)
 }
 
 // dummy code
@@ -394,11 +383,11 @@ fn exec<'a>(store: &Store<'a>, stack: &mut Stack<'a>) {
         if label.is_none() {
             let frame = stack.current_frame();
             if frame.is_none() {
-                // reached end of execution
+                log::debug!("reached end of execution");
                 return;
             }
 
-            // reached end of function
+            log::debug!("reached end of function");
             let frame = frame.unwrap();
             let arity = frame.arity;
 
@@ -447,6 +436,8 @@ fn exec<'a>(store: &Store<'a>, stack: &mut Stack<'a>) {
 }
 
 fn exec_instr<'a>(instr: &Instr, stack: &mut Stack<'a>, store: &Store<'a>) -> Result<(), ExecError> {
+    log::debug!("exec_instr: {:?}", instr);
+
     match instr {
         Instr::ConstInstr(instr) => exec_constinstr(instr, stack),
         Instr::NumInstr(instr) => exec_numinstr(instr, stack)?,
@@ -467,26 +458,26 @@ mod tests {
     use super::*;
     use crate::watparser::*;
 
-    #[test]
-    fn should_exec_func() {
-        let mut stack = Stack::new();
-        let (_, func) = func("(func $_start (result i32) i32.const 42)").unwrap();
-        exec_func(&func, &mut stack);
-
-        match stack.pop() {
-            Some(Entry::Value(v)) => assert_eq!(v, Value::I32(42)),
-            v => panic!("actual value: {:?}", v),
-        }
+    fn init() {
+        let _ = env_logger::builder()
+            .filter_level(log::LevelFilter::max())
+            .is_test(true).try_init();
     }
 
-    fn should_alloc_modlue() {
+    #[test]
+    fn should_alloc_module() {
+        init();
+
         let (_, module) = module("(module (type (;0;) (func)) (func $_start (type 0) (result i32) i32.const 42))").unwrap();
 
         let mut store = Store::new();
         let modinst = allocmodule(&mut store, &module);
     }
 
+    #[test]
     fn should_invoke_function() {
+        init();
+
         let (_, module) = module("(module (type (;0;) (func)) (func $_start (type 0) (result i32) i32.const 42))").unwrap();
 
         let mut store = Store::new();

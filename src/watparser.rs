@@ -20,7 +20,7 @@ pub struct Module {
     pub func: Vec<Func>,
     ta: Vec<Table>,
     me: Vec<Mem>,
-    gl: Vec<Global>,
+    pub gl: Vec<Global>,
     ex: Vec<Export>,
     // st: Start,
     el: Vec<Elem>,
@@ -551,7 +551,7 @@ fn limits(input: &str) -> IResult<&str, Limits> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum GlobalType {
+pub enum GlobalType {
     Const(ValType),
     Var(ValType)
 }
@@ -565,12 +565,12 @@ fn globaltype(input: &str) -> IResult<&str, GlobalType> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Global {
-    gt: GlobalType,
-    init: Vec<Instr>
+pub struct Global {
+    pub gt: GlobalType,
+    pub init: Vec<Instr>
 }
 
-fn global(input: &str) -> IResult<&str, Global> {
+pub fn global(input: &str) -> IResult<&str, Global> {
 
     // TODO: support Abbreviations
     let (input, (_, _, gt, init, _)) =

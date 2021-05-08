@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 type FuncAddr = usize;
+type ExternAddr = usize;
+type GlobalAddr = usize;
 
 #[derive(Error, Debug)]
 pub enum ExecError {
@@ -30,17 +32,21 @@ pub enum ExecError {
 #[derive(Debug, Default)]
 struct Store<'a> {
     funcs: Vec<FuncInstance<'a>>,
+    globals: Vec<GlobalInstance>,
 }
 
 impl<'a> Store<'a> {
     fn new() -> Self {
-        Store{ funcs: Vec::new() }
+        Store {
+            funcs: Vec::new(),
+            globals: Vec::new()
+        }
     }
 }
 
 #[derive(Debug)]
-struct Frame<'a> {
-    module: Rc<ModuleInstance<'a>>,
+struct Frame {
+    module: Rc<ModuleInstance>,
     locals: Vec<Value>,
     arity: usize,
 }
@@ -52,17 +58,31 @@ struct Label<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct ModuleInstance<'a> {
-    module: &'a Module,
-    funcs: Vec<FuncAddr>,
+struct ModuleInstance {
+//struct ModuleInstance<'a> {
+//    module: &'a Module,
+    funcaddrs: Vec<FuncAddr>,
+    globaladdrs: Vec<GlobalAddr>,
 
     funcnamemap: HashMap<String, FuncAddr>
 }
 
 #[derive(Debug, Clone)]
 struct FuncInstance<'a> {
-    module: Rc<ModuleInstance<'a>>,
+    module: Rc<ModuleInstance>,
     code: &'a Func,
+}
+
+#[derive(Debug, Clone)]
+struct GlobalInstance {
+    mutability: Mutability,
+    value: Value,
+}
+
+#[derive(Debug, Clone)]
+enum Mutability {
+    Const,
+    Var,
 }
 
 #[derive(Debug, Default)]
@@ -80,7 +100,7 @@ impl IdContext {
 enum Entry<'a> {
     Value(Value),
     Label(Label<'a>),
-    Activation(Frame<'a>)
+    Activation(Frame)
 }
 
 impl<'a> Entry<'a> {
@@ -98,6 +118,15 @@ enum Value {
     I64(i64),
     F32(f32),
     F64(f64),
+    RefNull(RefType),
+    Ref(FuncAddr),
+    RefExtern(ExternAddr),
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum RefType {
+    Function,
+    Extern,
 }
 
 impl Value {
@@ -107,6 +136,9 @@ impl Value {
             Value::I64(_) => "i64".to_owned(),
             Value::F32(_) => "f32".to_owned(),
             Value::F64(_) => "f64".to_owned(),
+            Value::RefNull(_) => "RefNull".to_owned(),
+            Value::Ref(_) => "Ref".to_owned(),
+            Value::RefExtern(_) => "RefExtern".to_owned(),
         }
     }
 }
@@ -153,7 +185,7 @@ impl<'a> Stack<'a> {
         }
     }
 
-    fn current_frame(&mut self) -> Option<&mut Frame<'a>> {
+    fn current_frame(&mut self) -> Option<&mut Frame> {
         for entry in self.0.iter_mut().rev() {
             match entry {
                 Entry::Activation(frame) => return Some(frame),
@@ -176,6 +208,15 @@ impl<'a> Stack<'a> {
         None
     }
 
+    fn pop_val(&mut self) -> Result<Value, ExecError> {
+        match self.pop() {
+            Some(Entry::Value(v)) => Ok(v),
+            Some(v) => return Err(ExecError::TypeMismatch{ expected: "Value".to_owned(),
+                                                           found: v.typedescr()}),
+            _ => return Err(ExecError::StackEmpty)
+        }
+    }
+
     fn pop_n_val(&mut self, n: usize) -> Result<Vec<Value>, ExecError> {
         let mut vals = Vec::new();
 
@@ -191,7 +232,11 @@ impl<'a> Stack<'a> {
         Ok(vals)
     }
 
-    fn push_frame(&mut self, frame: Frame<'a>) {
+    fn push_val(&mut self, val: Value) {
+        self.0.push(Entry::Value(val));
+    }
+
+    fn push_frame(&mut self, frame: Frame) {
         self.0.push(Entry::Activation(frame))
     }
 
@@ -303,33 +348,65 @@ fn valtype_to_defaultval(valtype: &ValType) -> Value {
     }
 }
 
-fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance<'a>> {
+fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance> {
     log::debug!("alloc module");
 
-    let mut mod_inst = Rc::new(ModuleInstance{ module ,
-                                               funcs: Vec::new(),
+    let mut mod_inst = Rc::new(ModuleInstance{ funcaddrs: Vec::new(),
+                                               globaladdrs: Vec::new(),
                                                funcnamemap: HashMap::new()});
 
     let mod_ptr: *mut _ = Rc::get_mut(&mut mod_inst).unwrap();
 
     for func in module.func.iter() {
         let funcaddr = allocfunc(store, func, Rc::clone(&mod_inst));
-        unsafe { (*mod_ptr).funcs.push(funcaddr);}
+        unsafe { (*mod_ptr).funcaddrs.push(funcaddr);}
         if let Some(name) = &func.id {
             unsafe { (*mod_ptr).funcnamemap.insert(name.clone(), funcaddr);}
         }
     }
 
+    for gl in module.gl.iter() {
+        let globaladdr = allocglobal(store, gl);
+        unsafe { (*mod_ptr).globaladdrs.push(globaladdr); }
+
+        // TODO: treat global id??
+    }
+
     mod_inst
 }
 
-fn allocfunc<'a>(store: &mut Store<'a>, func: &'a Func, mod_inst: Rc<ModuleInstance<'a>>) -> FuncAddr {
+fn allocfunc<'a>(store: &mut Store<'a>, func: &'a Func, mod_inst: Rc<ModuleInstance>) -> FuncAddr {
     let funcaddr = store.funcs.len();
 
     let funcinst = FuncInstance{ module: mod_inst, code: func };
     store.funcs.push(funcinst);
 
     funcaddr
+}
+
+fn allocglobal<'a>(store: &mut Store<'a>, gl: &Global) -> GlobalAddr {
+    let globaladdr = store.globals.len();
+
+    let mut stack = Stack::new();
+    let mut dummy_store = Store::new();
+
+    let label = Label { instrs: &gl.init,
+                        pc: 0};
+    stack.push_label(label);
+
+    exec(&mut stack, &mut dummy_store);
+
+    let init = stack.pop_val().unwrap(); // FIXME
+
+    let mutability = match gl.gt {
+        GlobalType::Const(_) => Mutability::Const,
+        GlobalType::Var(_) => Mutability::Var,
+    };
+
+    let glinst = GlobalInstance{ mutability, value: init};
+    store.globals.push(glinst);
+
+    globaladdr
 }
 
 fn create_idcontext(module: &Module) -> IdContext {
@@ -344,7 +421,7 @@ fn create_idcontext(module: &Module) -> IdContext {
     context
 }
 
-fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<Vec<Value>, ExecError> {
+fn invoke<'a>(store: &mut Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<Vec<Value>, ExecError> {
     log::debug!("invoke funcaddr: {}", funcaddr);
 
     let func = &store.funcs[funcaddr];
@@ -355,9 +432,8 @@ fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<
 
     // TODO: verify params type
 
-    let module = Module::new();
-    let mod_inst = Rc::new(ModuleInstance{ module: &module,
-                                           funcs: Vec::new(),
+    let mod_inst = Rc::new(ModuleInstance{ funcaddrs: Vec::new(),
+                                           globaladdrs: Vec::new(),
                                            funcnamemap: HashMap::new()});
 
     let frame = Frame{ module: mod_inst,
@@ -369,17 +445,17 @@ fn invoke<'a>(store: &Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Result<
         stack.push(Entry::Value(v));
     }
 
-    invoke_function(store, funcaddr, &mut stack);
+    invoke_function(store, funcaddr, &mut stack)?;
 
-    exec(store, &mut stack);
+    exec(&mut stack, store);
 
     stack.pop_n_val(frame.arity)
 }
 
 // dummy code
-fn exec<'a>(store: &Store<'a>, stack: &mut Stack<'a>) {
+fn exec<'a, 'b: 'a>(stack: &mut Stack<'a>, store: &mut Store<'b>) {
     loop {
-        let mut label = stack.current_label();
+        let label = stack.current_label();
         if label.is_none() {
             let frame = stack.current_frame();
             if frame.is_none() {
@@ -435,7 +511,7 @@ fn exec<'a>(store: &Store<'a>, stack: &mut Stack<'a>) {
     }
 }
 
-fn exec_instr<'a>(instr: &Instr, stack: &mut Stack<'a>, store: &Store<'a>) -> Result<(), ExecError> {
+fn exec_instr<'a, 'b: 'a>(instr: &Instr, stack: &mut Stack<'a>, store: &mut Store<'b>) -> Result<(), ExecError> {
     log::debug!("exec_instr: {:?}", instr);
 
     match instr {
@@ -446,10 +522,59 @@ fn exec_instr<'a>(instr: &Instr, stack: &mut Stack<'a>, store: &Store<'a>) -> Re
             exec_call(funcidx, stack, store)?;
             return Ok(());
         },
+
+        Instr::VarInstr(instr) => exec_varinstr(instr, stack, store)?,
         _ => unimplemented!()
     }
 
     Ok(())
+}
+
+fn exec_varinstr<'a, 'b: 'a>(instr: &VarInstr, stack: &mut Stack<'a>, store: &mut Store<'b>) -> Result<(), ExecError> {
+    match instr {
+        VarInstr::LocalGet(idx) => {
+            let index = to_index(idx)?;
+            let frame = stack.current_frame().unwrap();
+            let v = *frame.locals.get(index).unwrap();
+            stack.push(Entry::Value(v));
+        },
+        VarInstr::LocalSet(idx) => {
+            let index = to_index(idx)?;
+            let val = stack.pop_val()?;
+            let mut frame = stack.current_frame().unwrap();
+            frame.locals[index] = val;
+        },
+        VarInstr::LocalTee(idx) => {
+            let val = stack.pop_val()?;
+            stack.push_val(val);
+            stack.push_val(val);
+            exec_varinstr(&VarInstr::LocalSet(idx.clone()), stack, store)?;
+        },
+        VarInstr::GlobalGet(idx) => {
+            let index = to_index(idx)?;
+            let frame = stack.current_frame().unwrap();
+            let globaladdr = frame.module.globaladdrs[index];
+            let glob = &store.globals[globaladdr];
+            stack.push_val(glob.value);
+        },
+        VarInstr::GlobalSet(idx) => {
+            let index = to_index(idx)?;
+            let frame = stack.current_frame().unwrap();
+            let globaladdr = frame.module.globaladdrs[index];
+            let glob = &mut store.globals[globaladdr];
+            let val = stack.pop_val().unwrap();
+            glob.value = val;
+        },
+    }
+
+    Ok(())
+}
+
+fn to_index<'a>(idx: &Index) -> Result<usize, ExecError> {
+    match idx {
+        Index::Val(idx) => Ok(*idx as usize),
+        Index::Id(_) => unimplemented!(),
+    }
 }
 
 #[cfg(test)]
@@ -483,9 +608,20 @@ mod tests {
         let mut store = Store::new();
         let modinst = allocmodule(&mut store, &module);
 
-        let res = invoke(&store, 0, Vec::new());
+        let res = invoke(&mut store, 0, Vec::new());
         assert!(res.is_ok());
 
         assert_eq!(res.unwrap(), vec![Value::I32(42)]);
+    }
+
+    #[test]
+    fn should_alloc_global() {
+        init();
+
+        let (_, global) = global("(global (;0;) (mut i32) (i32.const 1048576))").unwrap();
+
+        let mut store = Store::new();
+        let globaladdr = allocglobal(&mut store, &global);
+        assert_eq!(store.globals[globaladdr].value, Value::I32(1048576));
     }
 }

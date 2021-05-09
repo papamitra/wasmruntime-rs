@@ -9,6 +9,7 @@ use std::rc::Rc;
 type FuncAddr = usize;
 type ExternAddr = usize;
 type GlobalAddr = usize;
+type TableAddr = usize;
 
 #[derive(Error, Debug)]
 pub enum ExecError {
@@ -18,8 +19,8 @@ pub enum ExecError {
     #[error("stack empty")]
     StackEmpty,
 
-    #[error("invalid stack value: {message}")]
-    InvalidStackValue{ message: String},
+    #[error("invalid stack value: {0}")]
+    InvalidStack(String),
 
     #[error("function index not found: index = {index}")]
     FuncIdxNotFound{ index: usize },
@@ -33,13 +34,15 @@ pub enum ExecError {
 struct Store<'a> {
     funcs: Vec<FuncInstance<'a>>,
     globals: Vec<GlobalInstance>,
+    tables: Vec<TableInstance>,
 }
 
 impl<'a> Store<'a> {
     fn new() -> Self {
         Store {
             funcs: Vec::new(),
-            globals: Vec::new()
+            globals: Vec::new(),
+            tables: Vec::new(),
         }
     }
 }
@@ -53,18 +56,29 @@ struct Frame {
 
 #[derive(Debug)]
 struct Label<'a> {
-    instrs: &'a Vec<Instr>,
+    instrs: &'a [Instr],
+    arity: usize,
     pc: usize,
 }
 
 #[derive(Debug, Clone)]
 struct ModuleInstance {
-//struct ModuleInstance<'a> {
-//    module: &'a Module,
     funcaddrs: Vec<FuncAddr>,
     globaladdrs: Vec<GlobalAddr>,
+    tableaddrs: Vec<TableAddr>,
 
     funcnamemap: HashMap<String, FuncAddr>
+}
+
+impl ModuleInstance {
+    fn new() -> ModuleInstance {
+        ModuleInstance{
+            funcaddrs: Vec::new(),
+            globaladdrs: Vec::new(),
+            tableaddrs: Vec::new(),
+
+            funcnamemap: HashMap::new()}
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +97,12 @@ struct GlobalInstance {
 enum Mutability {
     Const,
     Var,
+}
+
+#[derive(Debug, Clone)]
+struct TableInstance {
+    tabletype: Limits,
+    elem: Vec<Ref>,
 }
 
 #[derive(Debug, Default)]
@@ -118,15 +138,7 @@ enum Value {
     I64(i64),
     F32(f32),
     F64(f64),
-    RefNull(RefType),
-    Ref(FuncAddr),
-    RefExtern(ExternAddr),
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum RefType {
-    Function,
-    Extern,
+    Ref(Ref),
 }
 
 impl Value {
@@ -136,11 +148,22 @@ impl Value {
             Value::I64(_) => "i64".to_owned(),
             Value::F32(_) => "f32".to_owned(),
             Value::F64(_) => "f64".to_owned(),
-            Value::RefNull(_) => "RefNull".to_owned(),
             Value::Ref(_) => "Ref".to_owned(),
-            Value::RefExtern(_) => "RefExtern".to_owned(),
         }
     }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Ref {
+    Null(RefType),
+    FuncAddr(FuncAddr),
+    ExternAddr(ExternAddr),
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum RefType {
+    Function,
+    Extern,
 }
 
 struct Stack<'a>(Vec<Entry<'a>>);
@@ -217,7 +240,7 @@ impl<'a> Stack<'a> {
         }
     }
 
-    fn pop_n_val(&mut self, n: usize) -> Result<Vec<Value>, ExecError> {
+    fn pop_n_vals(&mut self, n: usize) -> Result<Vec<Value>, ExecError> {
         let mut vals = Vec::new();
 
         for _ in 0..n {
@@ -234,6 +257,10 @@ impl<'a> Stack<'a> {
 
     fn push_val(&mut self, val: Value) {
         self.0.push(Entry::Value(val));
+    }
+
+    fn push_vals(&mut self, vals: &[Value]) {
+        vals.iter().for_each(|v| self.push_val(*v));
     }
 
     fn push_frame(&mut self, frame: Frame) {
@@ -319,7 +346,7 @@ fn invoke_function<'a>(store: &Store<'a>, funcaddr: FuncAddr, stack: &mut Stack<
 
     let typeuse = &func.code.typeuse;
     let arity = typeuse.results.len();
-    let mut locals = stack.pop_n_val(typeuse.params.len())?;
+    let mut locals = stack.pop_n_vals(typeuse.params.len())?;
     for valtype in func.code.locals.iter() {
         locals.push(valtype_to_defaultval(valtype));
     }
@@ -332,9 +359,7 @@ fn invoke_function<'a>(store: &Store<'a>, funcaddr: FuncAddr, stack: &mut Stack<
 
     stack.push_frame(next_frame);
 
-    let label = Label { instrs: &func.code.body,
-                        pc: 0};
-    stack.push_label(label);
+    enter_instrs_with_label(stack, &func.code.body);
 
     Ok(())
 }
@@ -348,12 +373,18 @@ fn valtype_to_defaultval(valtype: &ValType) -> Value {
     }
 }
 
+fn enter_instrs_with_label<'a, 'b: 'a>(stack: &mut Stack<'a>, instrs: &'b [Instr]) {
+    let label = Label { instrs,
+                        arity: 0, // TODO
+                        pc: 0};
+    stack.push_label(label);
+}
+
+
 fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstance> {
     log::debug!("alloc module");
 
-    let mut mod_inst = Rc::new(ModuleInstance{ funcaddrs: Vec::new(),
-                                               globaladdrs: Vec::new(),
-                                               funcnamemap: HashMap::new()});
+    let mut mod_inst = Rc::new(ModuleInstance::new());
 
     let mod_ptr: *mut _ = Rc::get_mut(&mut mod_inst).unwrap();
 
@@ -370,6 +401,11 @@ fn allocmodule<'a>(store: &mut Store<'a>, module: &'a Module) -> Rc<ModuleInstan
         unsafe { (*mod_ptr).globaladdrs.push(globaladdr); }
 
         // TODO: treat global id??
+    }
+
+    for ta in module.ta.iter() {
+        let tableaddr = alloctable(store, &ta.limits, &Ref::Null(RefType::Function));
+        unsafe { (*mod_ptr).tableaddrs.push(tableaddr); }
     }
 
     mod_inst
@@ -391,6 +427,7 @@ fn allocglobal<'a>(store: &mut Store<'a>, gl: &Global) -> GlobalAddr {
     let mut dummy_store = Store::new();
 
     let label = Label { instrs: &gl.init,
+                        arity: 0,
                         pc: 0};
     stack.push_label(label);
 
@@ -407,6 +444,17 @@ fn allocglobal<'a>(store: &mut Store<'a>, gl: &Global) -> GlobalAddr {
     store.globals.push(glinst);
 
     globaladdr
+}
+
+fn alloctable<'a>(store: &mut Store<'a>, tabletype: &Limits, refv: &Ref) -> TableAddr {
+    let tableaddr = store.tables.len();
+
+    let tableinstance = TableInstance{ tabletype: tabletype.clone(),
+                                       elem: vec![refv.clone(); tabletype.min as usize]};
+
+    store.tables.push(tableinstance);
+
+    tableaddr
 }
 
 fn create_idcontext(module: &Module) -> IdContext {
@@ -432,9 +480,7 @@ fn invoke<'a>(store: &mut Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Res
 
     // TODO: verify params type
 
-    let mod_inst = Rc::new(ModuleInstance{ funcaddrs: Vec::new(),
-                                           globaladdrs: Vec::new(),
-                                           funcnamemap: HashMap::new()});
+    let mod_inst = Rc::new(ModuleInstance::new());
 
     let frame = Frame{ module: mod_inst,
                        locals: Vec::new(),
@@ -449,7 +495,7 @@ fn invoke<'a>(store: &mut Store<'a>, funcaddr: FuncAddr, val: Vec<Value>) -> Res
 
     exec(&mut stack, store);
 
-    stack.pop_n_val(frame.arity)
+    stack.pop_n_vals(frame.arity)
 }
 
 // dummy code
@@ -467,7 +513,7 @@ fn exec<'a, 'b: 'a>(stack: &mut Stack<'a>, store: &mut Store<'b>) {
             let frame = frame.unwrap();
             let arity = frame.arity;
 
-            let vals = stack.pop_n_val(arity).unwrap();
+            let vals = stack.pop_n_vals(arity).unwrap();
             match stack.pop() {
                 Some(Entry::Activation(frame)) => {
                     for val in vals.into_iter().rev() {
@@ -511,10 +557,11 @@ fn exec<'a, 'b: 'a>(stack: &mut Stack<'a>, store: &mut Store<'b>) {
     }
 }
 
-fn exec_instr<'a, 'b: 'a>(instr: &Instr, stack: &mut Stack<'a>, store: &mut Store<'b>) -> Result<(), ExecError> {
+fn exec_instr<'a, 'b: 'a>(instr: &'a Instr, stack: &mut Stack<'a>, store: &mut Store<'b>) -> Result<(), ExecError> {
     log::debug!("exec_instr: {:?}", instr);
 
     match instr {
+        Instr::Unreachable => panic!("Unreachable"),
         Instr::ConstInstr(instr) => exec_constinstr(instr, stack),
         Instr::NumInstr(instr) => exec_numinstr(instr, stack)?,
 
@@ -523,7 +570,15 @@ fn exec_instr<'a, 'b: 'a>(instr: &Instr, stack: &mut Stack<'a>, store: &mut Stor
             return Ok(());
         },
 
+        Instr::Return => exec_return(stack)?,
+
         Instr::VarInstr(instr) => exec_varinstr(instr, stack, store)?,
+
+        Instr::Block(block) => exec_block(block, stack)?,
+        // Instr::Loop
+        // Instr::If
+        Instr::Br(l) => exec_br(*l, stack)?,
+
         _ => unimplemented!()
     }
 
@@ -575,6 +630,67 @@ fn to_index<'a>(idx: &Index) -> Result<usize, ExecError> {
         Index::Val(idx) => Ok(*idx as usize),
         Index::Id(_) => unimplemented!(),
     }
+}
+
+fn exec_return<'a>(stack: &mut Stack<'a>) -> Result<(), ExecError> {
+    let frame = stack.current_frame().unwrap();
+    let arity = frame.arity;
+    let vals = stack.pop_n_vals(arity)?;
+
+    loop {
+        match stack.pop() {
+            Some(Entry::Activation(_)) => break,
+            _ => continue,
+            None => return Err(ExecError::InvalidStack("Frame not found".to_owned())),
+        }
+    }
+
+    stack.push_vals(&vals);
+
+    Ok(())
+}
+
+fn exec_block<'a, 'b: 'a>(block: &'b Block, stack: &mut Stack<'a>) -> Result<(), ExecError> {
+
+    //TODO: treat stack according to blocktype
+
+    enter_instrs_with_label(stack, &block.body);
+
+    Ok(())
+}
+
+fn exec_loop<'a, 'b: 'a>(block: &'b Block, stack: &mut Stack<'a>) -> Result<(), ExecError> {
+    let mut label = stack.current_label().unwrap();
+    label.pc -= 1; // next instr is this loop itself
+
+    //TODO: treat stack according to blocktype
+
+    enter_instrs_with_label(stack, &block.body);
+
+    Ok(())
+}
+
+fn exec_br<'a>(l: u32, stack: &mut Stack<'a>) -> Result<(), ExecError> {
+
+    let mut vals = Vec::new();
+    let mut label_cnt = 0;
+    loop {
+        match stack.pop() {
+            Some(Entry::Label(label)) => {
+                label_cnt += 1;
+                if label_cnt == l+1 {
+                    let arity = label.arity;
+                    vals[0..arity].iter().rev().for_each(|v| stack.push_val(*v));
+                    break
+                }
+            },
+            Some(Entry::Value(v)) => vals.push(v),
+            Some(_) => return Err(ExecError::InvalidStack("exec_br: stack have unexpected frame".to_owned())),
+            None => return Err(ExecError::InvalidStack(format!("exec_br: stack have not {}th label", l+1))),
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

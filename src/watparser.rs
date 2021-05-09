@@ -18,7 +18,7 @@ pub struct Module {
     ty: Vec<FuncType>,
     im: Vec<Import>,
     pub func: Vec<Func>,
-    ta: Vec<Table>,
+    pub ta: Vec<Table>,
     me: Vec<Mem>,
     pub gl: Vec<Global>,
     ex: Vec<Export>,
@@ -276,6 +276,7 @@ pub enum Instr {
     Drop,
     Select,
     VarInstr(VarInstr),
+    TableInstr(TableInstr),
     MemOpInstr(MemOpInstr),
     NumInstr(NumInstr),
     MemorySize,
@@ -303,6 +304,7 @@ fn plaininstr(input: &str) -> IResult<&str, Instr> {
          value(Instr::Drop, tag("drop")),
          value(Instr::Select, tag("Select")),
          map(varinstr, Instr::VarInstr),
+         map(tableinstr, Instr::TableInstr),
          map(memopinstr, Instr::MemOpInstr),
          map(constinstr, Instr::ConstInstr), // must be before numinstr
          map(numinstr, Instr::NumInstr),
@@ -334,6 +336,18 @@ pub enum VarInstr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableInstr {
+    TableGet(Index),
+    TableSet(Index),
+    TableSize(Index),
+    TableGrow(Index),
+    TableFill(Index),
+    TableCopy(Index, Index),
+    TableInit(Index, Index),
+    ElemDrop(Index),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemOpInstr {
     ty: ValType,
     op: String,
@@ -350,7 +364,7 @@ struct MemOpArg {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
-    body: Vec<Instr>
+    pub body: Vec<Instr>
 }
 
 fn instr(input: &str) -> IResult<&str, Instr> {
@@ -505,8 +519,8 @@ fn varinstr(input: &str) -> IResult<&str, VarInstr> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Table {
-    limits: Limits
+pub struct Table {
+    pub limits: Limits
 }
 
 fn table(input: &str) -> IResult<&str, Table> {
@@ -517,6 +531,27 @@ fn table(input: &str) -> IResult<&str, Table> {
                                          tuple((ws, tag("funcref"), ws, tag(")")))))(input)?;
 
     Ok((input, Table{limits}))
+}
+
+fn tableinstr(input: &str) -> IResult<&str, TableInstr> {
+    let (input, _) = ws(input)?;
+
+    alt((map(preceded(tag("table.get"), ws_(index)),
+             |i| TableInstr::TableGet(i)),
+         map(preceded(tag("table.set"), ws_(index)),
+             |i| TableInstr::TableSet(i)),
+         map(preceded(tag("table.size"), ws_(index)),
+             |i| TableInstr::TableSize(i)),
+         map(preceded(tag("table.grow"), ws_(index)),
+             |i| TableInstr::TableGrow(i)),
+         map(preceded(tag("table.fill"), ws_(index)),
+             |i| TableInstr::TableFill(i)),
+         map(preceded(tag("table.copy"), tuple((ws_(index), ws_(index)))),
+             |(i, j)| TableInstr::TableCopy(i, j)),
+         map(preceded(tag("table.init"), tuple((ws_(index), ws_(index)))),
+             |(i, j)| TableInstr::TableInit(i, j)),
+         map(preceded(tag("elem.drop"), ws_(index)),
+             |i| TableInstr::ElemDrop(i))))(input)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -535,9 +570,9 @@ fn mem(input: &str) -> IResult<&str, Mem> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Limits {
-    min: u32,
-    max: Option<u32>
+pub struct Limits {
+    pub min: u32,
+    pub max: Option<u32>
 }
 
 fn limits(input: &str) -> IResult<&str, Limits> {
